@@ -40,7 +40,9 @@ bpm remove <package_name>
 bpm list
 
 # Add More Sources
-bpm add https://yourwantsource.com/INDEX
+bpm add https://yourwantsource.com/
+*Examples
+bpm add https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/refs/heads/main
 
 ```
 
