@@ -39,6 +39,9 @@ bpm remove <package_name>
 # List all currently installed packages
 bpm list
 
+# Add More Sources
+bpm add https://yourwantsource.com/INDEX
+
 ```
 
 ---
