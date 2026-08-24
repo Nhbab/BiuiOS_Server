@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 DB_DIR="/var/db/bpm"
 INSTALLED_DIR="$DB_DIR/installed"
 CACHE_DIR="$DB_DIR/cache"
