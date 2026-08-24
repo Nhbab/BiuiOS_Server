@@ -52,10 +52,7 @@ The server manifest (`INDEX`) requires exactly three space-separated fields per 
 **Sample `INDEX` File:**
 
 ```text
-hello 1.0.0 275fbc94929702ad606612f59d5f230cc174e5ad961580d2e1e891e708c7a14f
-libexample 1.0.0 e0f5b3b273b5035866a648f0e86cfaf857d7bb1b73d1f5da827cbdf9db696cfc
-dillo 3.0.5 b4f042dfd5b5b530e9e5fa0db12e633cfe6e929578948cfec696d26ad9cb775e
-
+hello 1.0.0 <your Sha 256>
 ```
 
 ---
@@ -66,7 +63,6 @@ dillo 3.0.5 b4f042dfd5b5b530e9e5fa0db12e633cfe6e929578948cfec696d26ad9cb775e
 ```bash
 mkdir -p mypackage_pkg/usr/bin
 mkdir -p mypackage_pkg/usr/lib
-
 ```
 
 
