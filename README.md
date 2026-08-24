@@ -83,4 +83,4 @@ sha256sum mypackage-1.0.0.bpm
 ```
 
 
-5. **Deploy:** Upload the `.bpm` file to `Nhbab/BiuiOS_Server` and add `mypackage 1.0.0 <SHA256_HASH>` to the repository `INDEX` file.
+5. **Deploy:** Upload the `.bpm` file to `Nhbab/BiuiOS_Server Or Your Own Host Of BiuiOS_Server` and add `mypackage 1.0.0 <SHA256_HASH>` to the repository `INDEX` file.
