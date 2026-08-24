@@ -1,3 +1,4 @@
+cat << 'EOF' > /usr/bin/bpm
 #!/bin/bash
 DB_DIR="/var/db/bpm"
 INSTALLED_DIR="$DB_DIR/installed"
@@ -57,11 +58,33 @@ case "$1" in
         ;;
 
     install)
-        PKG="$2"
-        [ -z "$PKG" ] && { echo "Usage: bpm install <package>"; exit 1; }
+        TARGET="$2"
+        [ -z "$TARGET" ] && { echo "Usage: bpm install <package_name | /path/to/file.bpm>"; exit 1; }
 
+        # --- OFFLINE INSTALLATION ---
+        if [ -f "$TARGET" ] && [[ "$TARGET" == *.bpm ]]; then
+            FILENAME=$(basename "$TARGET")
+            FILENAME_NO_EXT="${FILENAME%.bpm}"
+            
+            PKG="${FILENAME_NO_EXT%-*}"
+            VERSION="${FILENAME_NO_EXT##*-}"
+            
+            # Fallback if package filename has no version hyphen
+            [ "$PKG" = "$VERSION" ] && VERSION="local"
+
+            echo "Installing offline package '$PKG v$VERSION' from $TARGET..."
+            tar -tzf "$TARGET" > "$INSTALLED_DIR/$PKG.list"
+            tar -xzf "$TARGET" -C /
+
+            update_ldconfig
+            echo "$PKG v$VERSION installed successfully (offline)."
+            exit 0
+        fi
+
+        # --- ONLINE INSTALLATION ---
+        PKG="$TARGET"
         ENTRY=$(grep "^$PKG " "$DB_DIR/INDEX" 2>/dev/null)
-        [ -z "$ENTRY" ] && { echo "Error: Package '$PKG' not found in INDEX."; exit 1; }
+        [ -z "$ENTRY" ] && { echo "Error: Package '$PKG' not found in INDEX and local file does not exist."; exit 1; }
 
         VERSION=$(echo "$ENTRY" | awk '{print $2}')
         HASH=$(echo "$ENTRY" | awk '{print $3}')
@@ -108,6 +131,9 @@ case "$1" in
 
     *)
         echo "BiuiOS Package Manager (.bpm format)"
-        echo "Usage: bpm {add <url>|update|install <pkg>|remove <pkg>|list}"
+        echo "Usage: bpm {add <url>|update|install <pkg|file.bpm>|remove <pkg>|list}"
         ;;
 esac
+EOF
+
+chmod +x /usr/bin/bpm
