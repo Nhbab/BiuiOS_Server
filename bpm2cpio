@@ -1,0 +1,17 @@
+cat << 'EOF' > /usr/bin/bpm2cpio
+#!/bin/bash
+if [ -z "$1" ]; then
+    echo "Usage: bpm2cpio <file.bpm> | cpio -idmv"
+    exit 1
+fi
+
+# Tạo một thư mục tạm để giải nén tar và chuyển đổi sang cpio qua luồng (stdout)
+TMP_DIR=$(mktemp -d)
+tar -xzf "$1" -C "$TMP_DIR"
+
+# Quét toàn bộ file trong thư mục tạm và nén chúng thành định dạng cpio chuẩn (odc)
+(cd "$TMP_DIR" && find . | cpio -o -H odc 2>/dev/null)
+
+# Xóa thư mục tạm sau khi xuất dữ liệu xong
+rm -rf "$TMP_DIR"
+EOF
