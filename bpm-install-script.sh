@@ -183,5 +183,5 @@ case "$1" in
         ;;
 esac
 EOF
-
+chmod +x /usr/bin/bpm
 chmod +x /usr/bin/bpm
