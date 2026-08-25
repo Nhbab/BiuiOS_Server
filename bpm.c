@@ -1,44 +1,241 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <dirent.h>
 #include <libgen.h>
 
 #define DB_DIR "/var/db/bpm"
 #define INSTALLED_DIR "/var/db/bpm/installed"
 #define CACHE_DIR "/var/db/bpm/cache"
 #define REPO_FILE "/var/db/bpm/repo.url"
-#define DEFAULT_REPO "https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
+#define DEFAULT_REPO "http://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
 
-void ensure_directories(void) {
-    system("mkdir -p " INSTALLED_DIR " " CACHE_DIR);
+/* ========================================================================== */
+/*                          1. NATIVE SHA-256 ENGINE                          */
+/* ========================================================================== */
+
+typedef struct {
+    uint8_t data[64];
+    uint32_t datalen;
+    unsigned long long bitlen;
+    uint32_t state[8];
+} SHA256_CTX;
+
+static const uint32_t K[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+#define ROTR(x,n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
+#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define EP0(x) (ROTR(x,2) ^ ROTR(x,13) ^ ROTR(x,22))
+#define EP1(x) (ROTR(x,6) ^ ROTR(x,11) ^ ROTR(x,25))
+#define SIG0(x) (ROTR(x,7) ^ ROTR(x,18) ^ ((x) >> 3))
+#define SIG1(x) (ROTR(x,17) ^ ROTR(x,19) ^ ((x) >> 10))
+
+void sha256_transform(SHA256_CTX *ctx, const uint8_t data[]) {
+    uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
+
+    for (i = 0, j = 0; i < 16; ++i, j += 4)
+        m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
+    for (; i < 64; ++i)
+        m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
+
+    a = ctx->state[0]; b = ctx->state[1]; c = ctx->state[2]; d = ctx->state[3];
+    e = ctx->state[4]; f = ctx->state[5]; g = ctx->state[6]; h = ctx->state[7];
+
+    for (i = 0; i < 64; ++i) {
+        t1 = h + EP1(e) + CH(e,f,g) + K[i] + m[i];
+        t2 = EP0(a) + MAJ(a,b,c);
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+void sha256_init(SHA256_CTX *ctx) {
+    ctx->datalen = 0; ctx->bitlen = 0;
+    ctx->state[0] = 0x6a09e667; ctx->state[1] = 0xbb67ae85;
+    ctx->state[2] = 0x3c6ef372; ctx->state[3] = 0xa54ff53a;
+    ctx->state[4] = 0x510e527f; ctx->state[5] = 0x9b05688c;
+    ctx->state[6] = 0x1f83d9ab; ctx->state[7] = 0x5be0cd19;
+}
+
+void sha256_update(SHA256_CTX *ctx, const uint8_t data[], size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        ctx->data[ctx->datalen] = data[i];
+        ctx->datalen++;
+        if (ctx->datalen == 64) {
+            sha256_transform(ctx, ctx->data);
+            ctx->bitlen += 512;
+            ctx->datalen = 0;
+        }
+    }
+}
+
+void sha256_final(SHA256_CTX *ctx, uint8_t hash[]) {
+    uint32_t i = ctx->datalen;
+    if (ctx->datalen < 56) {
+        ctx->data[i++] = 0x80;
+        while (i < 56) ctx->data[i++] = 0x00;
+    } else {
+        ctx->data[i++] = 0x80;
+        while (i < 64) ctx->data[i++] = 0x00;
+        sha256_transform(ctx, ctx->data);
+        memset(ctx->data, 0, 56);
+    }
+
+    ctx->bitlen += ctx->datalen * 8;
+    ctx->data[57] = ctx->bitlen >> 56; ctx->data[56] = ctx->bitlen >> 48;
+    ctx->data[58] = ctx->bitlen >> 40; ctx->data[59] = ctx->bitlen >> 32;
+    ctx->data[60] = ctx->bitlen >> 24; ctx->data[61] = ctx->bitlen >> 16;
+    ctx->data[62] = ctx->bitlen >> 8;  ctx->data[63] = ctx->bitlen;
+    sha256_transform(ctx, ctx->data);
+
+    for (i = 0; i < 4; ++i) {
+        hash[i]      = (ctx->state[0] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 4]  = (ctx->state[1] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 8]  = (ctx->state[2] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 12] = (ctx->state[3] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 16] = (ctx->state[4] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 20] = (ctx->state[5] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 24] = (ctx->state[6] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 28] = (ctx->state[7] >> (24 - i * 8)) & 0x000000ff;
+    }
+}
+
+int calculate_file_sha256(const char *filename, char output_hex[65]) {
+    FILE *f = fopen(filename, "rb");
+    if (!f) return -1;
+
+    SHA256_CTX ctx;
+    sha256_init(&ctx);
+    uint8_t buf[4096];
+    size_t bytes;
+
+    while ((bytes = fread(buf, 1, sizeof(buf), f)) > 0) {
+        sha256_update(&ctx, buf, bytes);
+    }
+    fclose(f);
+
+    uint8_t hash[32];
+    sha256_final(&ctx, hash);
+
+    for (int i = 0; i < 32; i++) {
+        sprintf(output_hex + (i * 2), "%02x", hash[i]);
+    }
+    output_hex[64] = '\0';
+    return 0;
+}
+
+/* ========================================================================== */
+/*                      2. NATIVE POSIX HTTP CLIENT                           */
+/* ========================================================================== */
+
+int download_http(const char *url, const char *output_path) {
+    char host[256] = {0}, path[512] = {0}, port[10] = "80";
+    if (sscanf(url, "http://%255[^/]%511s", host, path) < 1) {
+        fprintf(stderr, "Error: Only standard http:// URLs supported currently.\n");
+        return -1;
+    }
+    if (path[0] == '\0') strcpy(path, "/");
+
+    char *port_ptr = strchr(host, ':');
+    if (port_ptr) {
+        *port_ptr = '\0';
+        strcpy(port, port_ptr + 1);
+    }
+
+    struct addrinfo hints = {0}, *res;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port, &hints, &res) != 0) {
+        fprintf(stderr, "Error: Could not resolve hostname %s\n", host);
+        return -1;
+    }
+
+    int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sockfd < 0 || connect(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
+        fprintf(stderr, "Error: Connection failed to %s:%s\n", host, port);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+
+    char request[1024];
+    snprintf(request, sizeof(request),
+             "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: bpm-c-client\r\nConnection: close\r\n\r\n",
+             path, host);
+    send(sockfd, request, strlen(request), 0);
+
+    FILE *out = fopen(output_path, "wb");
+    if (!out) {
+        close(sockfd);
+        return -1;
+    }
+
+    char buffer[4096];
+    int header_ended = 0, bytes;
+    char *header_end_ptr;
+
+    while ((bytes = recv(sockfd, buffer, sizeof(buffer), 0)) > 0) {
+        if (!header_ended) {
+            header_end_ptr = strstr(buffer, "\r\n\r\n");
+            if (header_end_ptr) {
+                header_ended = 1;
+                int header_len = (header_end_ptr + 4) - buffer;
+                fwrite(buffer + header_len, 1, bytes - header_len, out);
+            }
+        } else {
+            fwrite(buffer, 1, bytes, out);
+        }
+    }
+
+    fclose(out);
+    close(sockfd);
+    return 0;
+}
+
+/* ========================================================================== */
+/*                      3. PACKAGE MANAGER CORE ENGINE                        */
+/* ========================================================================== */
+
+void mkdir_p(const char *path) {
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = 0;
+            mkdir(tmp, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(tmp, 0755);
 }
 
 void get_repo_url(char *buf, size_t size) {
     FILE *f = fopen(REPO_FILE, "r");
     if (f) {
-        if (fgets(buf, size, f)) {
-            buf[strcspn(buf, "\r\n")] = 0;
-        }
+        if (fgets(buf, size, f)) buf[strcspn(buf, "\r\n")] = 0;
         fclose(f);
     } else {
         strncpy(buf, DEFAULT_REPO, size - 1);
-        buf[size - 1] = '\0';
     }
-}
-
-int download_file(const char *url, const char *output) {
-    char cmd[1024];
-    if (access("/usr/bin/wget", X_OK) == 0 || access("/bin/wget", X_OK) == 0) {
-        snprintf(cmd, sizeof(cmd), "wget -q --no-check-certificate \"%s\" -O \"%s\"", url, output);
-    } else if (access("/usr/bin/curl", X_OK) == 0 || access("/bin/curl", X_OK) == 0) {
-        snprintf(cmd, sizeof(cmd), "curl -s -k -L \"%s\" -o \"%s\"", url, output);
-    } else {
-        fprintf(stderr, "Error: Neither wget nor curl is available!\n");
-        return -1;
-    }
-    return system(cmd);
 }
 
 void update_ldconfig(void) {
@@ -51,48 +248,9 @@ void update_ldconfig(void) {
 void run_post_install(const char *pkg) {
     if (access("/.bpm_postinstall", F_OK) == 0) {
         printf("Running post-install script for %s...\n", pkg);
-        system("chmod +x /.bpm_postinstall && /.bpm_postinstall");
+        chmod("/.bpm_postinstall", 0755);
+        system("/.bpm_postinstall");
         unlink("/.bpm_postinstall");
-    }
-}
-
-void cmd_add(const char *new_url) {
-    char clean_url[512];
-    strncpy(clean_url, new_url, sizeof(clean_url) - 1);
-    clean_url[sizeof(clean_url) - 1] = '\0';
-
-    size_t len = strlen(clean_url);
-    if (len > 6 && strcmp(clean_url + len - 6, "/INDEX") == 0) {
-        clean_url[len - 6] = '\0';
-    }
-    len = strlen(clean_url);
-    if (len > 0 && clean_url[len - 1] == '/') {
-        clean_url[len - 1] = '\0';
-    }
-
-    FILE *f = fopen(REPO_FILE, "w");
-    if (f) {
-        fprintf(f, "%s\n", clean_url);
-        fclose(f);
-        printf("Repository source set to: %s\n", clean_url);
-    } else {
-        perror("Error saving repo URL");
-    }
-}
-
-void cmd_update(void) {
-    char repo_url[512], index_url[1024], index_file[512];
-    get_repo_url(repo_url, sizeof(repo_url));
-
-    snprintf(index_url, sizeof(index_url), "%s/INDEX", repo_url);
-    snprintf(index_file, sizeof(index_file), "%s/INDEX", DB_DIR);
-
-    printf("Fetching index from %s...\n", repo_url);
-    if (download_file(index_url, index_file) == 0) {
-        printf("Package index updated successfully.\n");
-    } else {
-        fprintf(stderr, "Error: Failed to fetch package index from repository.\n");
-        exit(1);
     }
 }
 
@@ -102,7 +260,7 @@ int install_package(const char *pkg) {
 
     if (access(list_path, F_OK) == 0) {
         fprintf(stderr, "Error: Package '%s' is already installed.\n", pkg);
-        fprintf(stderr, "You must remove it first using 'bpm remove %s' before reinstalling.\n", pkg);
+        fprintf(stderr, "You must remove it first using 'bpm remove %s'\n", pkg);
         return -1;
     }
 
@@ -110,13 +268,12 @@ int install_package(const char *pkg) {
     snprintf(index_path, sizeof(index_path), "%s/INDEX", DB_DIR);
     FILE *f = fopen(index_path, "r");
     if (!f) {
-        fprintf(stderr, "Error: Package index file missing. Run 'bpm update' first.\n");
+        fprintf(stderr, "Error: Missing index. Run 'bpm update' first.\n");
         return -1;
     }
 
-    char line[1024], entry_name[128], version[64], expected_hash[128], deps[256];
+    char line[1024], entry_name[128], version[64], expected_hash[128], deps[256] = {0};
     int found = 0;
-    deps[0] = '\0';
 
     while (fgets(line, sizeof(line), f)) {
         int count = sscanf(line, "%127s %63s %127s %255s", entry_name, version, expected_hash, deps);
@@ -133,17 +290,14 @@ int install_package(const char *pkg) {
         return -1;
     }
 
-    // Dependency Resolution
+    // Dependencies
     if (strlen(deps) > 0 && strcmp(deps, "-") != 0) {
         printf("Resolving dependencies for %s: [%s]\n", pkg, deps);
         char *dep_token = strtok(deps, ",");
         while (dep_token != NULL) {
             char dep_list[512];
             snprintf(dep_list, sizeof(dep_list), "%s/%s.list", INSTALLED_DIR, dep_token);
-            if (access(dep_list, F_OK) == 0) {
-                printf("Dependency '%s' is already installed.\n", dep_token);
-            } else {
-                printf("Installing dependency '%s'...\n", dep_token);
+            if (access(dep_list, F_OK) != 0) {
                 if (install_package(dep_token) != 0) return -1;
             }
             dep_token = strtok(NULL, ",");
@@ -158,20 +312,13 @@ int install_package(const char *pkg) {
     snprintf(cache_path, sizeof(cache_path), "%s/%s", CACHE_DIR, file_name);
 
     printf("Downloading %s...\n", file_name);
-    if (download_file(file_url, cache_path) != 0) {
+    if (download_http(file_url, cache_path) != 0) {
         fprintf(stderr, "Download failed.\n");
         return -1;
     }
 
-    char calc_cmd[1024], calc_hash[128] = {0};
-    snprintf(calc_cmd, sizeof(calc_cmd), "sha256sum \"%s\" | awk '{print $1}'", cache_path);
-    FILE *p = popen(calc_cmd, "r");
-    if (p) {
-        if (fgets(calc_hash, sizeof(calc_hash), p)) {
-            calc_hash[strcspn(calc_hash, "\r\n")] = 0;
-        }
-        pclose(p);
-    }
+    char calc_hash[65];
+    calculate_file_sha256(cache_path, calc_hash);
 
     if (strcmp(calc_hash, expected_hash) != 0) {
         fprintf(stderr, "Error: Checksum mismatch for %s!\n", file_name);
@@ -179,12 +326,11 @@ int install_package(const char *pkg) {
         return -1;
     }
 
-    // Extract & Install
+    // Extraction & Manifest Generation
     printf("Installing %s v%s...\n", pkg, version);
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", cache_path, list_path);
     system(cmd);
-
     snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C /", cache_path);
     system(cmd);
 
@@ -196,111 +342,72 @@ int install_package(const char *pkg) {
     return 0;
 }
 
-void cmd_install(const char *target) {
-    if (access(target, F_OK) == 0 && strstr(target, ".bpm") != NULL) {
-        char target_copy[512], pkg[128], version[64];
-        strncpy(target_copy, target, sizeof(target_copy) - 1);
-        char *bname = basename(target_copy);
-
-        char *ext = strrchr(bname, '.');
-        if (ext) *ext = '\0';
-
-        char *dash = strrchr(bname, '-');
-        if (dash) {
-            *dash = '\0';
-            strcpy(pkg, bname);
-            strcpy(version, dash + 1);
-        } else {
-            strcpy(pkg, bname);
-            strcpy(version, "local");
-        }
-
-        char list_path[512];
-        snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg);
-        if (access(list_path, F_OK) == 0) {
-            fprintf(stderr, "Error: Package '%s' is already installed.\n", pkg);
-            fprintf(stderr, "You must remove it first using 'bpm remove %s' before reinstalling.\n", pkg);
-            exit(1);
-        }
-
-        printf("Installing offline package '%s v%s' from %s...\n", pkg, version, target);
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", target, list_path);
-        system(cmd);
-
-        snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C /", target);
-        system(cmd);
-
-        run_post_install(pkg);
-        update_ldconfig();
-        printf("%s v%s installed successfully (offline).\n", pkg, version);
-    } else {
-        install_package(target);
-    }
-}
-
 void cmd_remove(const char *pkg) {
     char list_path[512];
     snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg);
 
-    if (access(list_path, F_OK) != 0) {
+    FILE *f = fopen(list_path, "r");
+    if (!f) {
         fprintf(stderr, "Error: Package '%s' is not installed.\n", pkg);
         exit(1);
     }
 
     printf("Removing %s...\n", pkg);
-    FILE *f = fopen(list_path, "r");
-    if (f) {
-        char line[1024];
-        while (fgets(line, sizeof(line), f)) {
-            line[strcspn(line, "\r\n")] = 0;
-            if (strlen(line) == 0) continue;
-
-            char abs_path[2048];
-            snprintf(abs_path, sizeof(abs_path), "/%s", line);
-            unlink(abs_path);
-        }
-        fclose(f);
+    char line[1024], abs_path[2048];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strlen(line) == 0) continue;
+        snprintf(abs_path, sizeof(abs_path), "/%s", line);
+        unlink(abs_path);
     }
+    fclose(f);
 
     unlink(list_path);
     update_ldconfig();
-    printf("%s removed.\n", pkg);
+    printf("%s removed successfully.\n", pkg);
 }
 
 void cmd_list(void) {
+    DIR *d = opendir(INSTALLED_DIR);
+    if (!d) return;
+    struct dirent *dir;
     printf("Installed packages:\n");
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "ls \"%s\" 2>/dev/null | sed 's/\\.list$//'", INSTALLED_DIR);
-    system(cmd);
+    while ((dir = readdir(d)) != NULL) {
+        char *ext = strstr(dir->d_name, ".list");
+        if (ext) {
+            *ext = '\0';
+            printf(" - %s\n", dir->d_name);
+        }
+    }
+    closedir(d);
 }
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("BiuiOS Package Manager (.bpm format)\n");
-        printf("Usage: bpm {add <url>|update|install <pkg|file.bpm>|remove <pkg>|list}\n");
+        printf("BiuiOS Package Manager (C Native Port)\n");
+        printf("Usage: bpm {add <url>|update|install <pkg>|remove <pkg>|list}\n");
         return 1;
     }
 
-    ensure_directories();
+    mkdir_p(INSTALLED_DIR);
+    mkdir_p(CACHE_DIR);
 
-    if (strcmp(argv[1], "add") == 0) {
-        if (argc < 3) { fprintf(stderr, "Usage: bpm add <repository_url>\n"); return 1; }
-        cmd_add(argv[2]);
+    if (strcmp(argv[1], "add") == 0 && argc >= 3) {
+        FILE *f = fopen(REPO_FILE, "w");
+        if (f) { fprintf(f, "%s\n", argv[2]); fclose(f); }
     } else if (strcmp(argv[1], "update") == 0) {
-        cmd_update();
-    } else if (strcmp(argv[1], "install") == 0) {
-        if (argc < 3) { fprintf(stderr, "Usage: bpm install <package_name | file.bpm>\n"); return 1; }
-        cmd_install(argv[2]);
-    } else if (strcmp(argv[1], "remove") == 0) {
-        if (argc < 3) { fprintf(stderr, "Usage: bpm remove <package_name>\n"); return 1; }
+        char repo_url[512], index_url[1024], index_file[512];
+        get_repo_url(repo_url, sizeof(repo_url));
+        snprintf(index_url, sizeof(index_url), "%s/INDEX", repo_url);
+        snprintf(index_file, sizeof(index_file), "%s/INDEX", DB_DIR);
+        printf("Fetching index from %s...\n", repo_url);
+        if (download_http(index_url, index_file) == 0) printf("Updated.\n");
+    } else if (strcmp(argv[1], "install") == 0 && argc >= 3) {
+        install_package(argv[2]);
+    } else if (strcmp(argv[1], "remove") == 0 && argc >= 3) {
         cmd_remove(argv[2]);
     } else if (strcmp(argv[1], "list") == 0) {
         cmd_list();
-    } else {
-        printf("Unknown action: %s\n", argv[1]);
-        return 1;
     }
-
     return 0;
 }
