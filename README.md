@@ -52,12 +52,12 @@ bpm add https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/refs/heads/main
 
 The package manager fetches packages from the official server repository at `[https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main](https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main)`.
 
-The server manifest (`INDEX`) requires exactly three space-separated fields per line: **`NAME VERSION HASH`**.
+The server manifest (`INDEX`) requires exactly three space-separated fields per line: **`NAME VERSION HASH LIBARIES`**.
 
 **Sample `INDEX` File:**
 
 ```text
-hello 1.0.0 <your Sha 256>
+hello 1.0.0 <your Sha 256> <Speficic Libaries>
 ```
 
 ---
