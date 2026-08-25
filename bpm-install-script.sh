@@ -36,12 +36,78 @@ update_ldconfig() {
     fi
 }
 
+run_post_install() {
+    local PKG="$1"
+    if [ -f "/.bpm_postinstall" ]; then
+        echo "Running post-install script for $PKG..."
+        chmod +x /.bpm_postinstall
+        /.bpm_postinstall
+        rm -f /.bpm_postinstall
+    fi
+}
+
+install_package() {
+    local PKG="$1"
+
+    # --- DISALLOW RE-INSTALLATION ---
+    if [ -f "$INSTALLED_DIR/$PKG.list" ]; then
+        echo "Error: Package '$PKG' is already installed."
+        echo "You must remove it first using 'bpm remove $PKG' before reinstalling."
+        return 1
+    fi
+
+    # Lookup package entry in INDEX
+    ENTRY=$(grep "^$PKG " "$DB_DIR/INDEX" 2>/dev/null)
+    [ -z "$ENTRY" ] && { echo "Error: Package '$PKG' not found in INDEX."; return 1; }
+
+    VERSION=$(echo "$ENTRY" | awk '{print $2}')
+    HASH=$(echo "$ENTRY" | awk '{print $3}')
+    DEPS=$(echo "$ENTRY" | awk '{print $4}')
+    FILE="$PKG-$VERSION.bpm"
+
+    # --- DEPENDENCY RESOLVER ---
+    if [ -n "$DEPS" ] && [ "$DEPS" != "-" ]; then
+        echo "Resolving dependencies for $PKG: [$DEPS]"
+        IFS=',' read -ra DEP_LIST <<< "$DEPS"
+        for dep in "${DEP_LIST[@]}"; do
+            if [ -f "$INSTALLED_DIR/$dep.list" ]; then
+                echo "Dependency '$dep' is already installed."
+            else
+                echo "Installing dependency '$dep'..."
+                install_package "$dep" || return 1
+            fi
+        done
+    fi
+
+    # --- DOWNLOAD & VERIFY ---
+    echo "Downloading $FILE..."
+    download_file "$REPO_URL/$FILE" "$CACHE_DIR/$FILE" || { echo "Download failed."; return 1; }
+
+    CALC_HASH=$(sha256sum "$CACHE_DIR/$FILE" | awk '{print $1}')
+    if [ "$CALC_HASH" != "$HASH" ]; then
+        echo "Error: Checksum mismatch for $FILE!"
+        rm -f "$CACHE_DIR/$FILE"
+        return 1
+    fi
+
+    # --- UNPACK & RECORD ---
+    echo "Installing $PKG v$VERSION..."
+    tar -tzf "$CACHE_DIR/$FILE" > "$INSTALLED_DIR/$PKG.list"
+    tar -xzf "$CACHE_DIR/$FILE" -C /
+    rm -f "$CACHE_DIR/$FILE"
+
+    # --- POST-INSTALL COMMAND ---
+    run_post_install "$PKG"
+
+    update_ldconfig
+    echo "$PKG v$VERSION installed successfully."
+}
+
 case "$1" in
     add)
         NEW_URL="$2"
         [ -z "$NEW_URL" ] && { echo "Usage: bpm add <repository_url_or_INDEX_url>"; exit 1; }
 
-        # Normalize URL by removing trailing /INDEX or /
         CLEAN_URL=$(echo "$NEW_URL" | sed 's/\/INDEX$//' | sed 's/\/$//')
         echo "$CLEAN_URL" > "$REPO_FILE"
         echo "Repository source set to: $CLEAN_URL"
@@ -68,45 +134,27 @@ case "$1" in
             
             PKG="${FILENAME_NO_EXT%-*}"
             VERSION="${FILENAME_NO_EXT##*-}"
-            
-            # Fallback if package filename has no version hyphen
             [ "$PKG" = "$VERSION" ] && VERSION="local"
+
+            # Disallow offline reinstall
+            if [ -f "$INSTALLED_DIR/$PKG.list" ]; then
+                echo "Error: Package '$PKG' is already installed."
+                echo "You must remove it first using 'bpm remove $PKG' before reinstalling."
+                exit 1
+            fi
 
             echo "Installing offline package '$PKG v$VERSION' from $TARGET..."
             tar -tzf "$TARGET" > "$INSTALLED_DIR/$PKG.list"
             tar -xzf "$TARGET" -C /
 
+            run_post_install "$PKG"
             update_ldconfig
             echo "$PKG v$VERSION installed successfully (offline)."
             exit 0
         fi
 
         # --- ONLINE INSTALLATION ---
-        PKG="$TARGET"
-        ENTRY=$(grep "^$PKG " "$DB_DIR/INDEX" 2>/dev/null)
-        [ -z "$ENTRY" ] && { echo "Error: Package '$PKG' not found in INDEX and local file does not exist."; exit 1; }
-
-        VERSION=$(echo "$ENTRY" | awk '{print $2}')
-        HASH=$(echo "$ENTRY" | awk '{print $3}')
-        FILE="$PKG-$VERSION.bpm"
-
-        echo "Downloading $FILE..."
-        download_file "$REPO_URL/$FILE" "$CACHE_DIR/$FILE" || { echo "Download failed."; exit 1; }
-
-        CALC_HASH=$(sha256sum "$CACHE_DIR/$FILE" | awk '{print $1}')
-        if [ "$CALC_HASH" != "$HASH" ]; then
-            echo "Error: Checksum mismatch!"
-            rm -f "$CACHE_DIR/$FILE"
-            exit 1
-        fi
-
-        echo "Installing $PKG..."
-        tar -tzf "$CACHE_DIR/$FILE" > "$INSTALLED_DIR/$PKG.list"
-        tar -xzf "$CACHE_DIR/$FILE" -C /
-        rm -f "$CACHE_DIR/$FILE"
-
-        update_ldconfig
-        echo "$PKG v$VERSION installed successfully."
+        install_package "$TARGET"
         ;;
 
     remove)
