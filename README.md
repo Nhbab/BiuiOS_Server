@@ -90,6 +90,20 @@ sha256sum mypackage-1.0.0.bpm
 
 5. **Deploy:** Upload the `.bpm` file to `Nhbab/BiuiOS_Server Or Your Own Host Of BiuiOS_Server` and add `mypackage 1.0.0 <SHA256_HASH>` to the repository `INDEX` file.
 
-Changelogs From 25/8/2026
+# Changelogs From 25/8/2026
 
-Restructure Version Indexes
+  Restructure Version Indexes
+  ```
+# Inside package build folder
+cat << 'EOF' > .bpm_postinstall
+#!/bin/sh
+echo "Setting up symlinks and permissions..."
+ln -s /usr/bin/dillo /usr/bin/browser
+EOF
+
+chmod +x .bpm_postinstall
+
+# Tar up package as usual
+tar -czf ../dillo-3.0.5.bpm .
+```
+
