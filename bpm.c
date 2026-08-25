@@ -14,7 +14,7 @@
 #define INSTALLED_DIR "/var/db/bpm/installed"
 #define CACHE_DIR "/var/db/bpm/cache"
 #define REPO_FILE "/var/db/bpm/repo.url"
-#define DEFAULT_REPO "http://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
+#define DEFAULT_REPO "https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
 
 /* ========================================================================== */
 /*                          1. NATIVE SHA-256 ENGINE                          */
@@ -143,13 +143,27 @@ int calculate_file_sha256(const char *filename, char output_hex[65]) {
 }
 
 /* ========================================================================== */
-/*                      2. NATIVE POSIX HTTP CLIENT                           */
+/*                 2. HYBRID DOWNLOADER (SOCKETS + TLS FALLBACK)              */
 /* ========================================================================== */
 
-int download_http(const char *url, const char *output_path) {
+int download_file(const char *url, const char *output_path) {
+    char cmd[1024];
+
+    // If HTTPS or external tools are present, use wget/curl for TLS support
+    if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0) {
+        if (access("/usr/bin/wget", X_OK) == 0 || access("/bin/wget", X_OK) == 0) {
+            snprintf(cmd, sizeof(cmd), "wget -q --no-check-certificate \"%s\" -O \"%s\"", url, output_path);
+            return system(cmd);
+        } else if (access("/usr/bin/curl", X_OK) == 0 || access("/bin/curl", X_OK) == 0) {
+            snprintf(cmd, sizeof(cmd), "curl -s -k -L \"%s\" -o \"%s\"", url, output_path);
+            return system(cmd);
+        }
+    }
+
+    // Fallback socket client for plain HTTP
     char host[256] = {0}, path[512] = {0}, port[10] = "80";
     if (sscanf(url, "http://%255[^/]%511s", host, path) < 1) {
-        fprintf(stderr, "Error: Only standard http:// URLs supported currently.\n");
+        fprintf(stderr, "Error: Invalid or unsupported URL scheme.\n");
         return -1;
     }
     if (path[0] == '\0') strcpy(path, "/");
@@ -312,7 +326,7 @@ int install_package(const char *pkg) {
     snprintf(cache_path, sizeof(cache_path), "%s/%s", CACHE_DIR, file_name);
 
     printf("Downloading %s...\n", file_name);
-    if (download_http(file_url, cache_path) != 0) {
+    if (download_file(file_url, cache_path) != 0) {
         fprintf(stderr, "Download failed.\n");
         return -1;
     }
@@ -326,7 +340,7 @@ int install_package(const char *pkg) {
         return -1;
     }
 
-    // Extraction & Manifest Generation
+    // Extraction
     printf("Installing %s v%s...\n", pkg, version);
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", cache_path, list_path);
@@ -401,7 +415,7 @@ int main(int argc, char *argv[]) {
         snprintf(index_url, sizeof(index_url), "%s/INDEX", repo_url);
         snprintf(index_file, sizeof(index_file), "%s/INDEX", DB_DIR);
         printf("Fetching index from %s...\n", repo_url);
-        if (download_http(index_url, index_file) == 0) printf("Updated.\n");
+        if (download_file(index_url, index_file) == 0) printf("Updated.\n");
     } else if (strcmp(argv[1], "install") == 0 && argc >= 3) {
         install_package(argv[2]);
     } else if (strcmp(argv[1], "remove") == 0 && argc >= 3) {
