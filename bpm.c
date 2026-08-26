@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -17,7 +18,35 @@
 #define DEFAULT_REPO "https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
 
 /* ========================================================================== */
-/*                          1. NATIVE SHA-256 ENGINE                          */
+/*                          1. SECURITY UTILITIES                             */
+/* ========================================================================== */
+
+int is_valid_pkg_name(const char *name) {
+    if (!name || strlen(name) == 0 || strlen(name) > 128) return 0;
+    for (size_t i = 0; name[i] != '\0'; i++) {
+        if (!isalnum(name[i]) && name[i] != '-' && name[i] != '_' && name[i] != '.') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int is_safe_path(const char *path) {
+    if (strstr(path, "..") != NULL) return 0;
+    if (path[0] == '/') path++;
+    if (strstr(path, ":") != NULL) return 0;
+    return 1;
+}
+
+void require_root(void) {
+    if (getuid() != 0) {
+        fprintf(stderr, "Security Error: Root privileges required for this operation.\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+/* ========================================================================== */
+/*                          2. NATIVE SHA-256 ENGINE                          */
 /* ========================================================================== */
 
 typedef struct {
@@ -143,13 +172,12 @@ int calculate_file_sha256(const char *filename, char output_hex[65]) {
 }
 
 /* ========================================================================== */
-/*                 2. HYBRID DOWNLOADER (SOCKETS + TLS FALLBACK)              */
+/*                 3. DOWNLOADER ENGINE                                       */
 /* ========================================================================== */
 
 int download_file(const char *url, const char *output_path) {
     char cmd[1024];
 
-    // If HTTPS or external tools are present, use wget/curl for TLS support
     if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0) {
         if (access("/usr/bin/wget", X_OK) == 0 || access("/bin/wget", X_OK) == 0) {
             snprintf(cmd, sizeof(cmd), "wget -q --no-check-certificate \"%s\" -O \"%s\"", url, output_path);
@@ -160,10 +188,9 @@ int download_file(const char *url, const char *output_path) {
         }
     }
 
-    // Fallback socket client for plain HTTP
     char host[256] = {0}, path[512] = {0}, port[10] = "80";
     if (sscanf(url, "http://%255[^/]%511s", host, path) < 1) {
-        fprintf(stderr, "Error: Invalid or unsupported URL scheme.\n");
+        fprintf(stderr, "Error: Unsupported URL format.\n");
         return -1;
     }
     if (path[0] == '\0') strcpy(path, "/");
@@ -179,13 +206,13 @@ int download_file(const char *url, const char *output_path) {
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host, port, &hints, &res) != 0) {
-        fprintf(stderr, "Error: Could not resolve hostname %s\n", host);
+        fprintf(stderr, "Error: DNS Resolution failed for %s\n", host);
         return -1;
     }
 
     int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sockfd < 0 || connect(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
-        fprintf(stderr, "Error: Connection failed to %s:%s\n", host, port);
+        fprintf(stderr, "Error: Unable to connect to host %s\n", host);
         freeaddrinfo(res);
         return -1;
     }
@@ -193,7 +220,7 @@ int download_file(const char *url, const char *output_path) {
 
     char request[1024];
     snprintf(request, sizeof(request),
-             "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: bpm-c-client\r\nConnection: close\r\n\r\n",
+             "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: bpm-sec-client\r\nConnection: close\r\n\r\n",
              path, host);
     send(sockfd, request, strlen(request), 0);
 
@@ -202,6 +229,7 @@ int download_file(const char *url, const char *output_path) {
         close(sockfd);
         return -1;
     }
+    chmod(output_path, 0600);
 
     char buffer[4096];
     int header_ended = 0, bytes;
@@ -226,20 +254,20 @@ int download_file(const char *url, const char *output_path) {
 }
 
 /* ========================================================================== */
-/*                      3. PACKAGE MANAGER CORE ENGINE                        */
+/*                      4. PACKAGE MANAGER CORE ENGINE                        */
 /* ========================================================================== */
 
-void mkdir_p(const char *path) {
+void mkdir_secure(const char *path) {
     char tmp[512];
     snprintf(tmp, sizeof(tmp), "%s", path);
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = 0;
-            mkdir(tmp, 0755);
+            mkdir(tmp, 0700);
             *p = '/';
         }
     }
-    mkdir(tmp, 0755);
+    mkdir(tmp, 0700);
 }
 
 void get_repo_url(char *buf, size_t size) {
@@ -254,7 +282,6 @@ void get_repo_url(char *buf, size_t size) {
 
 void update_ldconfig(void) {
     if (access("/sbin/ldconfig", X_OK) == 0 || access("/usr/sbin/ldconfig", X_OK) == 0) {
-        printf("Updating dynamic linker cache (ldconfig)...\n");
         system("ldconfig 2>/dev/null");
     }
 }
@@ -262,19 +289,113 @@ void update_ldconfig(void) {
 void run_post_install(const char *pkg) {
     if (access("/.bpm_postinstall", F_OK) == 0) {
         printf("Running post-install script for %s...\n", pkg);
-        chmod("/.bpm_postinstall", 0755);
+        chmod("/.bpm_postinstall", 0700);
         system("/.bpm_postinstall");
         unlink("/.bpm_postinstall");
     }
 }
 
-int install_package(const char *pkg) {
+int cmd_update(void) {
+    char repo_url[512], index_url[1024], index_file[512];
+
+    get_repo_url(repo_url, sizeof(repo_url));
+    snprintf(index_url, sizeof(index_url), "%s/INDEX", repo_url);
+    snprintf(index_file, sizeof(index_file), "%s/INDEX", DB_DIR);
+
+    printf("Fetching index from %s...\n", repo_url);
+    if (download_file(index_url, index_file) == 0) {
+        chmod(index_file, 0600);
+        printf("Updated index successfully.\n");
+        return 0;
+    } else {
+        fprintf(stderr, "Error: Failed to download repository INDEX.\n");
+        return -1;
+    }
+}
+
+int install_local_package(const char *filepath) {
+    char path_copy[512];
+    strncpy(path_copy, filepath, sizeof(path_copy) - 1);
+    path_copy[sizeof(path_copy) - 1] = '\0';
+
+    char *bname = basename(path_copy);
+    char stem[256];
+    strncpy(stem, bname, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = '\0';
+
+    char *ext = strstr(stem, ".bpm");
+    if (ext) *ext = '\0';
+
+    char pkg_name[128];
+    strncpy(pkg_name, stem, sizeof(pkg_name) - 1);
+    pkg_name[sizeof(pkg_name) - 1] = '\0';
+
+    for (int i = 0; stem[i] != '\0'; i++) {
+        if (stem[i] == '-' && isdigit((unsigned char)stem[i + 1])) {
+            pkg_name[i] = '\0';
+            break;
+        }
+    }
+
+    if (!is_valid_pkg_name(pkg_name)) {
+        fprintf(stderr, "Security Error: Invalid package name derived from '%s'.\n", filepath);
+        return -1;
+    }
+
+    char list_path[512];
+    snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg_name);
+
+    if (access(list_path, F_OK) == 0) {
+        fprintf(stderr, "Error: Package '%s' is already installed.\n", pkg_name);
+        fprintf(stderr, "You must remove it first using 'bpm remove %s'\n", pkg_name);
+        return -1;
+    }
+
+    printf("Installing local package '%s' from %s...\n", pkg_name, filepath);
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", filepath, list_path);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "Error: Failed to index contents of '%s'.\n", filepath);
+        return -1;
+    }
+    chmod(list_path, 0600);
+
+    snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C /", filepath);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "Error: Extraction failed for '%s'.\n", filepath);
+        unlink(list_path);
+        return -1;
+    }
+
+    run_post_install(pkg_name);
+    update_ldconfig();
+
+    printf("%s installed successfully from local package.\n", pkg_name);
+    return 0;
+}
+
+int install_package(const char *pkg_or_file) {
+    if (strstr(pkg_or_file, ".bpm") != NULL || strchr(pkg_or_file, '/') != NULL) {
+        if (access(pkg_or_file, R_OK) == 0) {
+            return install_local_package(pkg_or_file);
+        } else {
+            fprintf(stderr, "Error: Local file '%s' not found or unreadable.\n", pkg_or_file);
+            return -1;
+        }
+    }
+
+    const char *pkg = pkg_or_file;
+    if (!is_valid_pkg_name(pkg)) {
+        fprintf(stderr, "Security Error: Invalid package name '%s'.\n", pkg);
+        return -1;
+    }
+
     char list_path[512];
     snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg);
 
     if (access(list_path, F_OK) == 0) {
         fprintf(stderr, "Error: Package '%s' is already installed.\n", pkg);
-        fprintf(stderr, "You must remove it first using 'bpm remove %s'\n", pkg);
         return -1;
     }
 
@@ -282,7 +403,7 @@ int install_package(const char *pkg) {
     snprintf(index_path, sizeof(index_path), "%s/INDEX", DB_DIR);
     FILE *f = fopen(index_path, "r");
     if (!f) {
-        fprintf(stderr, "Error: Missing index. Run 'bpm update' first.\n");
+        fprintf(stderr, "Error: Missing INDEX. Run 'bpm update' first.\n");
         return -1;
     }
 
@@ -304,11 +425,14 @@ int install_package(const char *pkg) {
         return -1;
     }
 
-    // Dependencies
     if (strlen(deps) > 0 && strcmp(deps, "-") != 0) {
         printf("Resolving dependencies for %s: [%s]\n", pkg, deps);
         char *dep_token = strtok(deps, ",");
         while (dep_token != NULL) {
+            if (!is_valid_pkg_name(dep_token)) {
+                fprintf(stderr, "Security Error: Malicious dependency name detected: %s\n", dep_token);
+                return -1;
+            }
             char dep_list[512];
             snprintf(dep_list, sizeof(dep_list), "%s/%s.list", INSTALLED_DIR, dep_token);
             if (access(dep_list, F_OK) != 0) {
@@ -318,7 +442,6 @@ int install_package(const char *pkg) {
         }
     }
 
-    // Download & Verify
     char repo_url[512], file_name[256], file_url[1024], cache_path[512];
     get_repo_url(repo_url, sizeof(repo_url));
     snprintf(file_name, sizeof(file_name), "%s-%s.bpm", pkg, version);
@@ -335,16 +458,18 @@ int install_package(const char *pkg) {
     calculate_file_sha256(cache_path, calc_hash);
 
     if (strcmp(calc_hash, expected_hash) != 0) {
-        fprintf(stderr, "Error: Checksum mismatch for %s!\n", file_name);
+        fprintf(stderr, "Security Alert: SHA-256 Checksum mismatch for %s!\n", file_name);
         unlink(cache_path);
         return -1;
     }
 
-    // Extraction
     printf("Installing %s v%s...\n", pkg, version);
     char cmd[1024];
+
     snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", cache_path, list_path);
     system(cmd);
+    chmod(list_path, 0600);
+
     snprintf(cmd, sizeof(cmd), "tar -xzf \"%s\" -C /", cache_path);
     system(cmd);
 
@@ -357,13 +482,18 @@ int install_package(const char *pkg) {
 }
 
 void cmd_remove(const char *pkg) {
+    if (!is_valid_pkg_name(pkg)) {
+        fprintf(stderr, "Security Error: Invalid package name.\n");
+        exit(EXIT_FAILURE);
+    }
+
     char list_path[512];
     snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg);
 
     FILE *f = fopen(list_path, "r");
     if (!f) {
         fprintf(stderr, "Error: Package '%s' is not installed.\n", pkg);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     printf("Removing %s...\n", pkg);
@@ -371,6 +501,12 @@ void cmd_remove(const char *pkg) {
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (strlen(line) == 0) continue;
+
+        if (!is_safe_path(line)) {
+            fprintf(stderr, "Security Warning: Skipped unsafe path during removal: %s\n", line);
+            continue;
+        }
+
         snprintf(abs_path, sizeof(abs_path), "/%s", line);
         unlink(abs_path);
     }
@@ -399,29 +535,35 @@ void cmd_list(void) {
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         printf("BiuiOS Package Manager (C Native Port)\n");
-        printf("Usage: bpm {add <url>|update|install <pkg>|remove <pkg>|list}\n");
-        return 1;
+        printf("Usage: bpm {add <url>|update|install <pkg|file.bpm>|remove <pkg>|list}\n");
+        return 0;
     }
 
-    mkdir_p(INSTALLED_DIR);
-    mkdir_p(CACHE_DIR);
+    umask(0077);
+
+    if (strcmp(argv[1], "list") == 0) {
+        cmd_list();
+        return 0;
+    }
+
+    require_root();
+    mkdir_secure(INSTALLED_DIR);
+    mkdir_secure(CACHE_DIR);
 
     if (strcmp(argv[1], "add") == 0 && argc >= 3) {
         FILE *f = fopen(REPO_FILE, "w");
-        if (f) { fprintf(f, "%s\n", argv[2]); fclose(f); }
+        if (f) {
+            fprintf(f, "%s\n", argv[2]);
+            fclose(f);
+            chmod(REPO_FILE, 0600);
+        }
     } else if (strcmp(argv[1], "update") == 0) {
-        char repo_url[512], index_url[1024], index_file[512];
-        get_repo_url(repo_url, sizeof(repo_url));
-        snprintf(index_url, sizeof(index_url), "%s/INDEX", repo_url);
-        snprintf(index_file, sizeof(index_file), "%s/INDEX", DB_DIR);
-        printf("Fetching index from %s...\n", repo_url);
-        if (download_file(index_url, index_file) == 0) printf("Updated.\n");
+        cmd_update();
     } else if (strcmp(argv[1], "install") == 0 && argc >= 3) {
         install_package(argv[2]);
     } else if (strcmp(argv[1], "remove") == 0 && argc >= 3) {
         cmd_remove(argv[2]);
-    } else if (strcmp(argv[1], "list") == 0) {
-        cmd_list();
     }
+
     return 0;
 }
