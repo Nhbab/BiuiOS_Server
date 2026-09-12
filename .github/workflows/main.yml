@@ -1,0 +1,221 @@
+name: Build Linux From Scratch
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  LFS: /mnt/lfs
+
+jobs:
+  # Job 1
+  prep-environment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies & Setup Directories
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential bison gawk m4 texinfo patch python3 tar gzip curl wget
+          sudo mkdir -pv $LFS/{bin,etc,lib,sbin,usr,var,tools,sources}
+          sudo chmod -R a+wt $LFS/sources
+          wget -P $LFS/sources https://www.linuxfromscratch.org/lfs/view/stable/wget-list
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-1
+          path: /mnt/lfs
+
+  # Job 2
+  build-cross-toolchain-1:
+    needs: prep-environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-1
+          path: /mnt/lfs
+
+      - name: Build Binutils & GCC Pass 1
+        run: |
+          echo "Building Binutils Pass 1 and GCC Pass 1..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-2
+          path: /mnt/lfs
+
+  # Job 3
+  build-glibc-libstdcxx:
+    needs: build-cross-toolchain-1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-2
+          path: /mnt/lfs
+
+      - name: Build Glibc & Libstdc++
+        run: |
+          echo "Building Linux Headers, Glibc, and Libstdc++..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-3
+          path: /mnt/lfs
+
+  # Job 4
+  build-temp-tools:
+    needs: build-glibc-libstdcxx
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-3
+          path: /mnt/lfs
+
+      - name: Compile Temporary Tools
+        run: |
+          echo "Compiling temporary tools (Bash, Coreutils, Sed, Make)..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-4
+          path: /mnt/lfs
+
+  # Job 5
+  finalize-temp-tools:
+    needs: build-temp-tools
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-4
+          path: /mnt/lfs
+
+      - name: Finalize Temporary System
+        run: |
+          echo "Finalizing /tools and setting root ownership..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-5
+          path: /mnt/lfs
+
+  # Job 6
+  chroot-base-system-1:
+    needs: finalize-temp-tools
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-5
+          path: /mnt/lfs
+
+      - name: Enter Chroot & Build Core Libraries
+        run: |
+          echo "Entering chroot and compiling essential libraries..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-6
+          path: /mnt/lfs
+
+  # Job 7
+  chroot-base-system-2:
+    needs: chroot-base-system-1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-6
+          path: /mnt/lfs
+
+      - name: Build Core System Packages
+        run: |
+          echo "Compiling core system packages (GCC final, Shadow, Ncurses)..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-7
+          path: /mnt/lfs
+
+  # Job 8
+  chroot-base-system-3:
+    needs: chroot-base-system-2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-7
+          path: /mnt/lfs
+
+      - name: Build System Utilities
+        run: |
+          echo "Compiling utilities (Coreutils, GRUB, IPRoute2, E2fsprogs)..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-8
+          path: /mnt/lfs
+
+  # Job 9
+  build-kernel-config:
+    needs: chroot-base-system-3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-8
+          path: /mnt/lfs
+
+      - name: Configure System & Build Kernel
+        run: |
+          echo "Configuring network, fstab, and compiling Linux Kernel..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-step-9
+          path: /mnt/lfs
+
+  # Job 10
+  package-lfs-tarball:
+    needs: build-kernel-config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
+        with:
+          name: lfs-step-9
+          path: /mnt/lfs
+
+      - name: Clean and Compress RootFS
+        run: |
+          sudo rm -rf $LFS/sources $LFS/tools
+          sudo tar -czvf lfs-rootfs.tar.gz -C $LFS .
+
+      - name: Upload Final Tarball Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lfs-rootfs-tarball
+          path: lfs-rootfs.tar.gz
+          retention-days: 30
