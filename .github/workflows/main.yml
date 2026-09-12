@@ -30,10 +30,16 @@ jobs:
           path: /mnt/lfs
 
   # Job 2
+# Example for Job 2 (repeat this fix for Jobs 2 through 10)
   build-cross-toolchain-1:
     needs: prep-environment
     runs-on: ubuntu-latest
     steps:
+      - name: Create and Set Permissions for LFS Directory
+        run: |
+          sudo mkdir -p /mnt/lfs
+          sudo chown -R $USER:$USER /mnt/lfs
+
       - name: Download LFS State
         uses: actions/download-artifact@v4
         with:
