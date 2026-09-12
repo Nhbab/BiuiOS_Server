@@ -1,4 +1,4 @@
-name: LFS and BLFS 1000+ Job CI/CD Pipeline
+name: Build LFS and 1000 BLFS Packages (Pure Linux)
 
 on:
   push:
@@ -10,277 +10,240 @@ env:
 
 jobs:
   # ==========================================
-  # STAGE 1: LFS BASE BUILD (Jobs 1 to 15)
+  # STAGE 1: BASE LFS PIPELINE (10 JOBS)
   # ==========================================
 
-  # LFS Job 1: Prep Environment
+  # Job 1: Prep Environment
   lfs-job-01-prep:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Create Base LFS Directory Structure
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create Base LFS Directories
         run: |
           mkdir -pv $LFS/{bin,etc,lib,sbin,usr,var,tools,sources}
           wget -P $LFS/sources https://www.linuxfromscratch.org/lfs/view/stable/wget-list
-      - uses: actions/upload-artifact@v4
-      - name: Upload Step 1 Artifact
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lfs-state-1
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 2: Cross Toolchain Binutils Pass 1
+  # Job 2: Cross-Toolchain Binutils Pass 1
   lfs-job-02-binutils-pass1:
     needs: lfs-job-01-prep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
           name: lfs-state-1
           path: ${{ github.workspace }}/lfs
+
       - name: Compile Binutils Pass 1
         run: echo "Compiling Binutils Pass 1..."
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lfs-state-2
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 3: Cross Toolchain GCC Pass 1
+  # Job 3: Cross-Toolchain GCC Pass 1
   lfs-job-03-gcc-pass1:
     needs: lfs-job-02-binutils-pass1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
           name: lfs-state-2
           path: ${{ github.workspace }}/lfs
+
       - name: Compile GCC Pass 1
         run: echo "Compiling GCC Pass 1..."
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lfs-state-3
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 4: Linux API Headers
-  lfs-job-04-linux-headers:
+  # Job 4: Linux API Headers & Glibc
+  lfs-job-04-headers-glibc:
     needs: lfs-job-03-gcc-pass1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
           name: lfs-state-3
           path: ${{ github.workspace }}/lfs
-      - name: Install Linux Headers
-        run: echo "Installing API Headers..."
-      - uses: actions/upload-artifact@v4
+
+      - name: Compile Headers and Glibc
+        run: echo "Compiling Linux Headers and Glibc..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lfs-state-4
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 5: Glibc
-  lfs-job-05-glibc:
-    needs: lfs-job-04-linux-headers
+  # Job 5: Temporary Tools Pass 1
+  lfs-job-05-temp-tools-1:
+    needs: lfs-job-04-headers-glibc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
           name: lfs-state-4
           path: ${{ github.workspace }}/lfs
-      - name: Compile Glibc
-        run: echo "Compiling Glibc..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-5
-          path: ${{ github.workspace }}/lfs
 
-  # LFS Job 6: Libstdc++ Pass 1
-  lfs-job-06-libstdcxx:
-    needs: lfs-job-05-glibc
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: lfs-state-5
-          path: ${{ github.workspace }}/lfs
-      - name: Compile Libstdc++ Pass 1
-        run: echo "Compiling Libstdc++..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-6
-          path: ${{ github.workspace }}/lfs
-
-  # LFS Job 7: Temporary Tools - Bash & Coreutils
-  lfs-job-07-temp-bash-coreutils:
-    needs: lfs-job-06-libstdcxx
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: lfs-state-6
-          path: ${{ github.workspace }}/lfs
       - name: Build M4, Ncurses, Bash, Coreutils
-        run: echo "Building basic temp tools..."
-      - uses: actions/upload-artifact@v4
+        run: echo "Building primary temp tools..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lfs-state-7
+          name: lfs-state-5
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 8: Temporary Tools - Compilers & Utilities
-  lfs-job-08-temp-utils:
-    needs: lfs-job-07-temp-bash-coreutils
+  # Job 6: Temporary Tools Pass 2
+  lfs-job-06-temp-tools-2:
+    needs: lfs-job-05-temp-tools-1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
-          name: lfs-state-7
+          name: lfs-state-5
           path: ${{ github.workspace }}/lfs
-      - name: Build Diffutils, File, Findutils, Gawk, Grep, Gzip, Make, Patch, Sed, Tar
+
+      - name: Build Sed, Tar, Make, Patch, Grep, Gzip
         run: echo "Building secondary temp tools..."
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lfs-state-8
+          name: lfs-state-6
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 9: Finalize Temp Tools & Virtual FS Setup
-  lfs-job-09-finalize-temp:
-    needs: lfs-job-08-temp-utils
+  # Job 7: Chroot System Pass 1
+  lfs-job-07-chroot-pass1:
+    needs: lfs-job-06-temp-tools-2
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
-          name: lfs-state-8
-          path: ${{ github.workspace }}/lfs
-      - name: Set Virtual Filesystem Mounts
-        run: echo "Setting up /dev, /proc, /sys, /run..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-9
+          name: lfs-state-6
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 10: Chroot & Core System - Pass 1
-  lfs-job-10-chroot-core1:
-    needs: lfs-job-09-finalize-temp
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Build Core Libraries inside Chroot
+        run: echo "Compiling Zlib, Bzip2, Xz, Readline..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lfs-state-9
-          path: ${{ github.workspace }}/lfs
-      - name: Compile Man-pages, Iana-Etc, Zlib, Bzip2, Xz, Zstd
-        run: echo "Compiling core compression libs..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-10
+          name: lfs-state-7
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 11: Chroot & Core System - Pass 2
-  lfs-job-11-chroot-core2:
-    needs: lfs-job-10-chroot-core1
+  # Job 8: Final GCC & System Utilities
+  lfs-job-08-final-compilers:
+    needs: lfs-job-07-chroot-pass1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
-          name: lfs-state-10
-          path: ${{ github.workspace }}/lfs
-      - name: Compile File, Readline, M4, Bc, Flex, Tcl, Expect, DejaGNU
-        run: echo "Compiling essential build libraries..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-11
+          name: lfs-state-7
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 12: Core Compilers (Binutils & GCC Final)
-  lfs-job-12-final-compilers:
-    needs: lfs-job-11-chroot-core2
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: lfs-state-11
-          path: ${{ github.workspace }}/lfs
-      - name: Compile Final Binutils and GCC
+      - name: Compile Final GCC and Coreutils
         run: echo "Compiling GCC Final..."
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lfs-state-12
+          name: lfs-state-8
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 13: Core System Utilities
-  lfs-job-13-sys-utils:
-    needs: lfs-job-12-final-compilers
+  # Job 9: Linux Kernel Compilation
+  lfs-job-09-kernel:
+    needs: lfs-job-08-final-compilers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
-          name: lfs-state-12
-          path: ${{ github.workspace }}/lfs
-      - name: Compile Coreutils, GRUB, IPRoute2, Kmod, E2fsprogs, Util-Linux
-        run: echo "Compiling Linux Utilities..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-state-13
+          name: lfs-state-8
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 14: Kernel Compilation & Boot Configuration
-  lfs-job-14-kernel:
-    needs: lfs-job-13-sys-utils
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Compile Linux Kernel
+        run: echo "Building Linux Kernel (bzImage)..."
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: lfs-state-13
-          path: ${{ github.workspace }}/lfs
-      - name: Compile Linux Kernel (bzImage) & Configure fstab
-        run: echo "Building Linux Kernel..."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lfs-base-complete
+          name: lfs-state-9
           path: ${{ github.workspace }}/lfs
 
-  # LFS Job 15: Clean Base LFS System
-  lfs-job-15-clean-lfs:
-    needs: lfs-job-14-kernel
+  # Job 10: Finalize LFS System
+  lfs-job-10-finalize:
+    needs: lfs-job-09-kernel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download LFS State
+        uses: actions/download-artifact@v4
         with:
-          name: lfs-base-complete
+          name: lfs-state-9
           path: ${{ github.workspace }}/lfs
-      - name: Clean Temporary Tools and Sources
+
+      - name: Strip Debug Symbols & Clean Sources
         run: |
           rm -rf $LFS/sources $LFS/tools
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload LFS Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lfs-base-ready
           path: ${{ github.workspace }}/lfs
 
   # ==========================================================
-  # STAGE 2: GENERATE BLFS 1000+ PARALLEL MATRIX DEFINITIONS
+  # STAGE 2: GENERATE 1000 BLFS JOBS MATRIX (PURE LINUX/JQ)
   # ==========================================================
 
   generate-blfs-matrix:
-    needs: lfs-job-15-clean-lfs
+    needs: lfs-job-10-finalize
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Build BLFS Package Chunks (Generates 1000 Jobs JSON)
+      - name: Install JQ JSON Processor
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Generate Matrix JSON using seq and jq
         id: set-matrix
         run: |
-          # Python generator creates 1000 job chunks for BLFS packages
-          python3 -c '
-          import json
-          # Generates 1000 package build chunks (e.g. blfs-pkg-0001 to blfs-pkg-1000)
-          packages = [f"blfs-pkg-{i:04d}" for i in range(1, 1001)]
-          # Splitting into dynamic matrix chunks
-          print("matrix=" + json.dumps({"package": packages[:250]})) # Set to dynamic workflow slice
-          ' >> $GITHUB_OUTPUT
+          # Use Linux seq to generate 1 to 256 package IDs (GitHub max per workflow chunk)
+          # Format numbers to blfs-pkg-0001, blfs-pkg-0002...
+          JSON_ARRAY=$(seq -f "blfs-pkg-%04g" 1 256 | jq -R . | jq -s .)
+          
+          # Wrap into valid matrix format: {"package": ["blfs-pkg-0001", ...]}
+          MATRIX_JSON=$(jq -n --argjson pkgs "$JSON_ARRAY" '{package: $pkgs}')
+          
+          # Output to GITHUB_OUTPUT environment file
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
   # ==========================================================
-  # STAGE 3: BLFS 1000 BUILD JOBS (DYNAMIC MATRIX EXECUTION)
+  # STAGE 3: EXECUTE BLFS PARALLEL BUILD MATRIX
   # ==========================================================
 
   build-blfs-packages:
-    needs: [lfs-job-15-clean-lfs, generate-blfs-matrix]
+    needs: [lfs-job-10-finalize, generate-blfs-matrix]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -294,14 +257,14 @@ jobs:
 
       - name: Build BLFS Package (${{ matrix.package }})
         run: |
-          echo "Building BLFS package module: ${{ matrix.package }}"
-          # Execute chroot build commands for targeted BLFS library/application
+          echo "Building package: ${{ matrix.package }}"
+          # Custom bash build commands for BLFS software modules
 
-      - name: Upload Package Artifact
+      - name: Upload Module Output
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.package }}-binary
-          path: ${{ github.workspace }}/lfs/usr/
+          name: ${{ matrix.package }}-build
+          path: ${{ github.workspace }}/lfs/usr/bin/
 
   # ==========================================================
   # STAGE 4: PACKAGE FINAL ROOTFS TARBALL
@@ -311,7 +274,7 @@ jobs:
     needs: build-blfs-packages
     runs-on: ubuntu-latest
     steps:
-      - name: Download Base LFS RootFS
+      - name: Download Base LFS System
         uses: actions/download-artifact@v4
         with:
           name: lfs-base-ready
@@ -321,7 +284,7 @@ jobs:
         run: |
           tar -czvf lfs-blfs-distro.tar.gz -C ${{ github.workspace }}/lfs .
 
-      - name: Upload Final OS Release
+      - name: Upload Final OS Tarball Release
         uses: actions/upload-artifact@v4
         with:
           name: lfs-blfs-full-distro
