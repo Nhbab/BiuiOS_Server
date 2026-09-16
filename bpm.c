@@ -17,6 +17,15 @@
 #define REPO_FILE "/var/db/bpm/repo.url"
 #define DEFAULT_REPO "https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
 
+#define MAX_RECURSION_DEPTH 64
+
+/* Circular dependency tracking state */
+static char visiting_stack[MAX_RECURSION_DEPTH][128];
+static int visiting_count = 0;
+
+static char processed_pkgs[256][128];
+static int processed_count = 0;
+
 /* ========================================================================== */
 /*                           1. SECURITY UTILITIES                            */
 /* ========================================================================== */
@@ -392,12 +401,37 @@ int install_package(const char *pkg_or_file) {
         return -1;
     }
 
+    /* Check if already processed during this run */
+    for (int i = 0; i < processed_count; i++) {
+        if (strcmp(processed_pkgs[i], pkg) == 0) {
+            return 0;
+        }
+    }
+
+    /* Detect circular dependency loops */
+    for (int i = 0; i < visiting_count; i++) {
+        if (strcmp(visiting_stack[i], pkg) == 0) {
+            fprintf(stderr, "Warning: Circular dependency detected for '%s', skipping recursive resolution.\n", pkg);
+            return 0;
+        }
+    }
+
+    if (visiting_count >= MAX_RECURSION_DEPTH) {
+        fprintf(stderr, "Error: Dependency resolution recursion depth exceeded.\n");
+        return -1;
+    }
+
+    strncpy(visiting_stack[visiting_count], pkg, 127);
+    visiting_stack[visiting_count][127] = '\0';
+    visiting_count++;
+
     char list_path[512];
     snprintf(list_path, sizeof(list_path), "%s/%s.list", INSTALLED_DIR, pkg);
 
     if (access(list_path, F_OK) == 0) {
-        fprintf(stderr, "Error: Package '%s' is already installed.\n", pkg);
-        return -1;
+        strncpy(processed_pkgs[processed_count++], pkg, 127);
+        visiting_count--;
+        return 0;
     }
 
     char index_path[512];
@@ -405,6 +439,7 @@ int install_package(const char *pkg_or_file) {
     FILE *f = fopen(index_path, "r");
     if (!f) {
         fprintf(stderr, "Error: Missing INDEX. Run 'bpm update' first.\n");
+        visiting_count--;
         return -1;
     }
 
@@ -412,7 +447,6 @@ int install_package(const char *pkg_or_file) {
     int found = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        // Reads all remaining dependency tokens on the line (e.g. "libexample dillo")
         int count = sscanf(line, "%127s %63s %127s %255[^\r\n]", entry_name, version, expected_hash, deps);
         if (count >= 3 && strcmp(entry_name, pkg) == 0) {
             found = 1;
@@ -424,6 +458,7 @@ int install_package(const char *pkg_or_file) {
 
     if (!found) {
         fprintf(stderr, "Error: Package '%s' not found in INDEX.\n", pkg);
+        visiting_count--;
         return -1;
     }
 
@@ -441,12 +476,16 @@ int install_package(const char *pkg_or_file) {
             if (strlen(dep_token) > 0) {
                 if (!is_valid_pkg_name(dep_token)) {
                     fprintf(stderr, "Security Error: Malicious dependency name detected: %s\n", dep_token);
+                    visiting_count--;
                     return -1;
                 }
                 char dep_list[512];
                 snprintf(dep_list, sizeof(dep_list), "%s/%s.list", INSTALLED_DIR, dep_token);
                 if (access(dep_list, F_OK) != 0) {
-                    if (install_package(dep_token) != 0) return -1;
+                    if (install_package(dep_token) != 0) {
+                        visiting_count--;
+                        return -1;
+                    }
                 }
             }
             dep_token = strtok_r(NULL, ", \t\r\n", &saveptr);
@@ -462,6 +501,7 @@ int install_package(const char *pkg_or_file) {
     printf("Downloading %s...\n", file_name);
     if (download_file(file_url, cache_path) != 0) {
         fprintf(stderr, "Download failed.\n");
+        visiting_count--;
         return -1;
     }
 
@@ -471,6 +511,7 @@ int install_package(const char *pkg_or_file) {
     if (strcmp(calc_hash, expected_hash) != 0) {
         fprintf(stderr, "Security Alert: SHA-256 Checksum mismatch for %s!\n", file_name);
         unlink(cache_path);
+        visiting_count--;
         return -1;
     }
 
@@ -489,6 +530,9 @@ int install_package(const char *pkg_or_file) {
     update_ldconfig();
 
     printf("%s v%s installed successfully.\n", pkg, version);
+
+    strncpy(processed_pkgs[processed_count++], pkg, 127);
+    visiting_count--;
     return 0;
 }
 
