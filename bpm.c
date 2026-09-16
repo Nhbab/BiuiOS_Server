@@ -18,13 +18,13 @@
 #define DEFAULT_REPO "https://raw.githubusercontent.com/Nhbab/BiuiOS_Server/main"
 
 /* ========================================================================== */
-/*                          1. SECURITY UTILITIES                             */
+/*                           1. SECURITY UTILITIES                            */
 /* ========================================================================== */
 
 int is_valid_pkg_name(const char *name) {
     if (!name || strlen(name) == 0 || strlen(name) > 128) return 0;
     for (size_t i = 0; name[i] != '\0'; i++) {
-        if (!isalnum(name[i]) && name[i] != '-' && name[i] != '_' && name[i] != '.') {
+        if (!isalnum((unsigned char)name[i]) && name[i] != '-' && name[i] != '_' && name[i] != '.') {
             return 0;
         }
     }
@@ -46,7 +46,7 @@ void require_root(void) {
 }
 
 /* ========================================================================== */
-/*                          2. NATIVE SHA-256 ENGINE                          */
+/*                           2. NATIVE SHA-256 ENGINE                         */
 /* ========================================================================== */
 
 typedef struct {
@@ -172,7 +172,7 @@ int calculate_file_sha256(const char *filename, char output_hex[65]) {
 }
 
 /* ========================================================================== */
-/*                 3. DOWNLOADER ENGINE                                       */
+/*                                3. DOWNLOADER ENGINE                         */
 /* ========================================================================== */
 
 int download_file(const char *url, const char *output_path) {
@@ -254,7 +254,7 @@ int download_file(const char *url, const char *output_path) {
 }
 
 /* ========================================================================== */
-/*                      4. PACKAGE MANAGER CORE ENGINE                        */
+/*                       4. PACKAGE MANAGER CORE ENGINE                       */
 /* ========================================================================== */
 
 void mkdir_secure(const char *path) {
@@ -277,6 +277,7 @@ void get_repo_url(char *buf, size_t size) {
         fclose(f);
     } else {
         strncpy(buf, DEFAULT_REPO, size - 1);
+        buf[size - 1] = '\0';
     }
 }
 
@@ -411,7 +412,8 @@ int install_package(const char *pkg_or_file) {
     int found = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        int count = sscanf(line, "%127s %63s %127s %255s", entry_name, version, expected_hash, deps);
+        // Reads all remaining dependency tokens on the line (e.g. "libexample dillo")
+        int count = sscanf(line, "%127s %63s %127s %255[^\r\n]", entry_name, version, expected_hash, deps);
         if (count >= 3 && strcmp(entry_name, pkg) == 0) {
             found = 1;
             if (count < 4) strcpy(deps, "-");
@@ -427,18 +429,27 @@ int install_package(const char *pkg_or_file) {
 
     if (strlen(deps) > 0 && strcmp(deps, "-") != 0) {
         printf("Resolving dependencies for %s: [%s]\n", pkg, deps);
-        char *dep_token = strtok(deps, ",");
+        
+        char deps_copy[256];
+        strncpy(deps_copy, deps, sizeof(deps_copy) - 1);
+        deps_copy[sizeof(deps_copy) - 1] = '\0';
+
+        char *saveptr = NULL;
+        char *dep_token = strtok_r(deps_copy, ", \t\r\n", &saveptr);
+        
         while (dep_token != NULL) {
-            if (!is_valid_pkg_name(dep_token)) {
-                fprintf(stderr, "Security Error: Malicious dependency name detected: %s\n", dep_token);
-                return -1;
+            if (strlen(dep_token) > 0) {
+                if (!is_valid_pkg_name(dep_token)) {
+                    fprintf(stderr, "Security Error: Malicious dependency name detected: %s\n", dep_token);
+                    return -1;
+                }
+                char dep_list[512];
+                snprintf(dep_list, sizeof(dep_list), "%s/%s.list", INSTALLED_DIR, dep_token);
+                if (access(dep_list, F_OK) != 0) {
+                    if (install_package(dep_token) != 0) return -1;
+                }
             }
-            char dep_list[512];
-            snprintf(dep_list, sizeof(dep_list), "%s/%s.list", INSTALLED_DIR, dep_token);
-            if (access(dep_list, F_OK) != 0) {
-                if (install_package(dep_token) != 0) return -1;
-            }
-            dep_token = strtok(NULL, ",");
+            dep_token = strtok_r(NULL, ", \t\r\n", &saveptr);
         }
     }
 
