@@ -364,14 +364,14 @@ int install_local_package(const char *filepath) {
     printf("Installing local package '%s' from %s...\n", pkg_name, filepath);
 
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", filepath, list_path);
+    snprintf(cmd, sizeof(cmd), "tar -atf \"%s\" > \"%s\"", filepath, list_path);
     if (system(cmd) != 0) {
         fprintf(stderr, "Error: Failed to index contents of '%s'.\n", filepath);
         return -1;
     }
     chmod(list_path, 0600);
 
-    snprintf(cmd, sizeof(cmd), "tar -xavf \"%s\" -C /", filepath);
+    snprintf(cmd, sizeof(cmd), "tar -axf \"%s\" -C /", filepath);
     if (system(cmd) != 0) {
         fprintf(stderr, "Error: Extraction failed for '%s'.\n", filepath);
         unlink(list_path);
@@ -518,11 +518,11 @@ int install_package(const char *pkg_or_file) {
     printf("Installing %s v%s...\n", pkg, version);
     char cmd[1024];
 
-    snprintf(cmd, sizeof(cmd), "tar -tzf \"%s\" > \"%s\"", cache_path, list_path);
+    snprintf(cmd, sizeof(cmd), "tar -atf \"%s\" > \"%s\"", cache_path, list_path);
     system(cmd);
     chmod(list_path, 0600);
 
-    snprintf(cmd, sizeof(cmd), "tar -xavf \"%s\" -C /", cache_path);
+    snprintf(cmd, sizeof(cmd), "tar -axf \"%s\" -C /", cache_path);
     system(cmd);
 
     unlink(cache_path);
