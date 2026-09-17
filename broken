@@ -1,4 +1,4 @@
-cat << 'EOF' > /usr/bin/bpm
+#cat << 'EOF' > /usr/bin/bpm
 #!/bin/bash
 DB_DIR="/var/db/bpm"
 INSTALLED_DIR="$DB_DIR/installed"
