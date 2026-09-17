@@ -26,6 +26,31 @@ static int visiting_count = 0;
 static char processed_pkgs[256][128];
 static int processed_count = 0;
 
+/* Detect decompression flag based on file magic numbers */
+const char* get_tar_decompression_flag(const char *filepath) {
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return "";
+
+    unsigned char buf[6];
+    size_t n = fread(buf, 1, 6, f);
+    fclose(f);
+
+    if (n < 2) return "";
+
+    /* Gzip: 1F 8B */
+    if (buf[0] == 0x1F && buf[1] == 0x8B) return "-z";
+    /* Bzip2: 42 5A */
+    if (buf[0] == 0x42 && buf[1] == 0x5A) return "-j";
+    /* XZ: FD 37 7A 58 5A 00 */
+    if (n >= 6 && buf[0] == 0xFD && buf[1] == 0x37 && buf[2] == 0x7A && 
+        buf[3] == 0x58 && buf[4] == 0x5A && buf[5] == 0x00) return "-J";
+    /* Zstd: 28 B5 2F FD */
+    if (n >= 4 && buf[0] == 0x28 && buf[1] == 0xB5 && buf[2] == 0x2F && buf[3] == 0xFD) return "--zstd";
+
+    /* Plain tar or unknown */
+    return "";
+}
+
 /* ========================================================================== */
 /*                           1. SECURITY UTILITIES                            */
 /* ========================================================================== */
@@ -363,15 +388,17 @@ int install_local_package(const char *filepath) {
 
     printf("Installing local package '%s' from %s...\n", pkg_name, filepath);
 
+    const char *flag = get_tar_decompression_flag(filepath);
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "tar -atf \"%s\" > \"%s\"", filepath, list_path);
+
+    snprintf(cmd, sizeof(cmd), "tar %s -tf \"%s\" > \"%s\"", flag, filepath, list_path);
     if (system(cmd) != 0) {
         fprintf(stderr, "Error: Failed to index contents of '%s'.\n", filepath);
         return -1;
     }
     chmod(list_path, 0600);
 
-    snprintf(cmd, sizeof(cmd), "tar -axf \"%s\" -C /", filepath);
+    snprintf(cmd, sizeof(cmd), "tar %s -xf \"%s\" -C /", flag, filepath);
     if (system(cmd) != 0) {
         fprintf(stderr, "Error: Extraction failed for '%s'.\n", filepath);
         unlink(list_path);
@@ -516,13 +543,14 @@ int install_package(const char *pkg_or_file) {
     }
 
     printf("Installing %s v%s...\n", pkg, version);
+    const char *flag = get_tar_decompression_flag(cache_path);
     char cmd[1024];
 
-    snprintf(cmd, sizeof(cmd), "tar -atf \"%s\" > \"%s\"", cache_path, list_path);
+    snprintf(cmd, sizeof(cmd), "tar %s -tf \"%s\" > \"%s\"", flag, cache_path, list_path);
     system(cmd);
     chmod(list_path, 0600);
 
-    snprintf(cmd, sizeof(cmd), "tar -axf \"%s\" -C /", cache_path);
+    snprintf(cmd, sizeof(cmd), "tar %s -xf \"%s\" -C /", flag, cache_path);
     system(cmd);
 
     unlink(cache_path);
